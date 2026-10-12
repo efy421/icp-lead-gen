@@ -29,19 +29,48 @@ WAIT = 700          # generous: partial results are silent, not an error
 MAXPOSTS = 20
 
 
-def _load_json(path):
-    """Apify dataset downloads get truncated on large payloads; fall back to a
-    raw decode of the first complete JSON value instead of dropping the file."""
-    raw = open(path, encoding="utf-8", errors="ignore").read()
-    try:
-        return json.loads(raw)
-    except Exception:
-        dec = json.JSONDecoder()
+PAGE = 100          # items per dataset page request
+
+
+def _fetch_dataset_items(ds, tok, max_pages=40):
+    """Page through a dataset instead of downloading it in one shot.
+
+    A single GET on a large dataset truncates mid-JSON (observed at ~280KB and
+    ~393KB), which silently drops records. Paging with ?offset=&limit= keeps
+    each response small and makes truncation obvious (a short page ends the
+    loop early) rather than corrupting the result.
+    """
+    items, offset, truncated_pages = [], 0, 0
+    for _ in range(max_pages):
+        tmp = f"/tmp/_pg_{os.getpid()}_{offset}.json"
+        subprocess.run(["curl", "-s", "--compressed", "-m", "120", "-o", tmp,
+            f"https://api.apify.com/v2/datasets/{ds}/items"
+            f"?token={tok}&offset={offset}&limit={PAGE}&clean=1"],
+            capture_output=True)
+        raw = open(tmp, encoding="utf-8", errors="ignore").read()
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        page = None
         try:
-            obj, _ = dec.raw_decode(raw)
-            return obj
+            page = json.loads(raw)
         except Exception:
-            return []
+            dec = json.JSONDecoder()
+            try:
+                page, _ = dec.raw_decode(raw)   # salvage a partial page
+                truncated_pages += 1
+            except Exception:
+                break
+        if isinstance(page, dict):
+            page = page.get("items", [])
+        if not isinstance(page, list) or not page:
+            break
+        items.extend(x for x in page if isinstance(x, dict))
+        if len(page) < PAGE:
+            break                              # short page = last page
+        offset += PAGE
+    if truncated_pages:
+        print(f"  note: salvaged {truncated_pages} truncated page(s)")
+    return items
 
 
 def fetch_activity(urls, days=DAYS, max_posts=MAXPOSTS, wait=WAIT, batch=BATCH):
@@ -56,7 +85,6 @@ def fetch_activity(urls, days=DAYS, max_posts=MAXPOSTS, wait=WAIT, batch=BATCH):
         chunk = urls[i:i + batch]
         tok = next(_rot)
         payload = {"targetUrls": chunk, "maxPosts": max_posts}
-        tmp = f"/tmp/_act_{os.getpid()}_{i}.json"
         p = subprocess.run(["curl", "-s", "--compressed", "-m", str(wait + 60),
             "-X", "POST",
             f"https://api.apify.com/v2/acts/{ACTOR}/runs?token={tok}&waitForFinish={wait}",
@@ -71,14 +99,7 @@ def fetch_activity(urls, days=DAYS, max_posts=MAXPOSTS, wait=WAIT, batch=BATCH):
         ds = d.get("defaultDatasetId")
         if not ds:
             continue
-        subprocess.run(["curl", "-s", "--compressed", "-m", "180", "-o", tmp,
-            f"https://api.apify.com/v2/datasets/{ds}/items?token={tok}"],
-            capture_output=True)
-        items = _load_json(tmp)
-        if os.path.exists(tmp):
-            os.remove(tmp)
-        if isinstance(items, dict):
-            items = items.get("items", [])
+        items = _fetch_dataset_items(ds, tok)
         if not items:
             continue
 
