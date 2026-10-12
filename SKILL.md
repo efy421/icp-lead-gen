@@ -73,7 +73,7 @@ the failure this skill exists to stop.
 | Headcount | Apify `harvestapi~linkedin-company` | worker claims were 75% wrong |
 | Company resolution | actor's `searches` field (by NAME) | 81% match; guessing slugs only 40% |
 | AI-vendor exclusion | curl the site, regex for AI-service language | competitors, not leads |
-| Duplicate removal | `PRIOR_SLUGS_*.txt` + `PRIOR_NAMES_*.txt`, slug AND normalized-name | name-matching caught real dupes that slug-matching missed |
+| Duplicate removal | globs **every** `PRIOR_SLUGS_v*.txt` / `PRIOR_NAMES_v*.txt` (v11..v14+), slug AND normalized name | batches are versioned, so a hardcoded filename silently dedupes against a stale list. Name-matching caught real dupes that slug-matching missed |
 | Key safety | aborts if a client key is in env; reads only `apify_keys_pool.txt` | client key cost $0.056 once |
 
 ## Apify accounts — HARD RULE
@@ -96,6 +96,20 @@ monthly capacity, so topping up is rarely needed.
   boutique. Report the count so the user can filter.
 - **Unresolved companies** (Apify found no page) are NOT passes. Keep them in a
   separate "unverified" bucket, never mixed into a verified deliverable.
+- **Company names come back cleaned** (`ConsumerDNA`, not `ConsumerDNA, LLC`), so
+  exact-match lookups fail. The script strips legal suffixes and falls back to a
+  longest-prefix match — do not "simplify" that back to exact match.
+- **Deliverable naming convention**: `fresh_8085_icp_v<N>.csv` paired with
+  `fresh_8085_v<N>_linkedin.txt`, N incrementing per batch. These two filenames are
+  also how dedupe discovers them, so renaming breaks future duplicate protection.
+
+## Historical note — which batches are actually trustworthy
+
+| Batch | Headcount source | Usable? |
+|---|---|---|
+| v10, v11, v12 | worker-claimed | **No.** Unverified. Apify later showed 6 of 8 resolvable leads overstated; 36 of 55 were actually under 5 employees. Treat as research candidates only. |
+| v13 | worker-claimed | **No.** Same problem — of 55 resolvable, only 6 were in the 5-10 band. |
+| v14 | Apify `employeeCount` | **Yes.** First batch where every lead passed machine verification. |
 
 ## Anti-hallucination checklist before delivering
 

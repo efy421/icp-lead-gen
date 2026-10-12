@@ -25,7 +25,12 @@ import json, csv, re, sys, os, subprocess, itertools, argparse
 HOME = os.path.expanduser("~")
 BASE = f"{HOME}/firstmate"
 POOL = f"{BASE}/apify_keys_pool.txt"
-BLOCKLISTS = [f"{BASE}/PRIOR_SLUGS_v13.txt", f"{BASE}/PRIOR_NAMES_v13.txt"]
+import glob
+def _blocklists(kind):
+    """Glob every PRIOR_<kind>_v*.txt. Batches are numbered (v11..v14) and a new
+    one appears per run, so a hardcoded filename silently dedupes against a stale
+    list. Union of all versions is the safe choice."""
+    return sorted(glob.glob(f"{BASE}/PRIOR_{kind}_v*.txt"))
 CLIENT_KEY_MARKER = "branding_pirates"
 
 # ---------- guards ----------
@@ -95,15 +100,14 @@ def norm_name(n):
     return " ".join(sorted(n.split()))
 
 def load_prior():
+    """Two explicit files, no guessing. Slug files contain linkedin slugs
+    (lowercase, no spaces); name files contain person names (may contain
+    spaces/hyphens). Never infer which is which from the string itself."""
     S, N = set(), set()
-    for f in BLOCKLISTS:
-        if not os.path.exists(f):
-            continue
-        for line in open(f, encoding="utf-8"):
-            v = line.strip().lower()
-            if not v:
-                continue
-            (S if "/" in v or "-" in v else N).add(v)
+    for f in _blocklists("SLUGS"):
+        S |= {l.strip().lower() for l in open(f, encoding="utf-8") if l.strip()}
+    for f in _blocklists("NAMES"):
+        N |= {l.strip().lower() for l in open(f, encoding="utf-8") if l.strip()}
     return S, N
 
 def parse_row(line):
