@@ -42,6 +42,24 @@ TOKS = [l.strip() for l in open(POOL) if l.strip()] if os.path.exists(POOL) else
 if not TOKS:
     sys.exit(f"ABORT: no free Apify keys found at {POOL}. Ask the user to add "
              "more free keys — never fall back to a client/paid key.")
+
+# HARD BLOCK: verify every key in the pool is actually on the FREE plan before
+# spending anything. Guards against a client/paid key being pasted into the pool.
+def _verify_free(keys):
+    import urllib.request
+    for k in keys:
+        try:
+            with urllib.request.urlopen(
+                f"https://api.apify.com/v2/users/me?token={k}", timeout=25) as r:
+                u = json.load(r).get("data", {})
+            plan = (u.get("plan") or {}).get("id")
+            user = u.get("username")
+        except Exception as e:
+            sys.exit(f"ABORT: could not validate an Apify key ({e}).")
+        if plan != "FREE":
+            sys.exit(f"ABORT: key for '{user}' is on plan '{plan}', not FREE. "
+                     "Refusing to spend a client/paid account.")
+_verify_free(TOKS)
 _rot = itertools.cycle(TOKS)
 
 # ---------- apify ----------
@@ -99,6 +117,11 @@ def norm_name(n):
     n = re.sub(r"\b(jr|sr|ii|iii|md|cpa|mba)\b", "", n)
     return " ".join(sorted(n.split()))
 
+try:
+    from activity_check import fetch_activity
+except Exception:
+    fetch_activity = None
+
 def load_prior():
     """Two explicit files, no guessing. Slug files contain linkedin slugs
     (lowercase, no spaces); name files contain person names (may contain
@@ -120,6 +143,8 @@ def main():
     ap.add_argument("input"); ap.add_argument("output")
     ap.add_argument("--min-emp", type=int, default=5)
     ap.add_argument("--max-emp", type=int, default=0, help="0 = no ceiling")
+    ap.add_argument("--activity", action="store_true",
+                    help="also check 90-day LinkedIn post activity (1 URL per request)")
     a = ap.parse_args()
 
     prior_s, prior_n = load_prior()
@@ -193,11 +218,29 @@ def main():
         keep = (emp is not None and emp >= a.min_emp
                 and (a.max_emp == 0 or emp <= a.max_emp) and not ai)
         r["verified_pass"] = "PASS" if keep else "FAIL"
+        r["activity_status"] = ""
+        r["activity_posts_90d"] = ""
+        r["activity_latest"] = ""
         out.append(r)
+
+    # Activity check (mirrors lead-verification-pipeline: 90-day window)
+    if fetch_activity and "--activity" in sys.argv:
+        passers = [r for r in out if r["verified_pass"] == "PASS"]
+        urls = [r["LinkedIn URL"] for r in passers]
+        print(f"\nchecking 90-day LinkedIn activity for {len(urls)} passing leads...")
+        act = fetch_activity(urls)
+        for r in passers:
+            info = act.get(r["LinkedIn URL"], {})
+            r["activity_status"] = info.get("status", "NO_RESULT")
+            r["activity_posts_90d"] = info.get("n90", 0)
+            r["activity_latest"] = info.get("latest_date", "")
+        from collections import Counter as _C
+        print("  activity:", dict(_C(r["activity_status"] for r in passers)))
 
     cols = ["Name","Company","Title","LinkedIn URL","City","State","Employees","Niche",
             "ICP_Score","emp_verified","emp_range","company_followers","company_url",
-            "founded","ai_vendor","verified_pass","Notes"]
+            "founded","ai_vendor","verified_pass",
+            "activity_status","activity_posts_90d","activity_latest","Notes"]
     with open(a.output, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=cols); w.writeheader()
         for r in out:
